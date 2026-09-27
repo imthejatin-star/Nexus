@@ -1,3 +1,4 @@
+import { supabase } from "./supabase.js";
 "use strict";
 
 /*
