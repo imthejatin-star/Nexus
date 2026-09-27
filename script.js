@@ -139,7 +139,52 @@ function loadState() {
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
+async function syncNoteToCloud(note) {
+  if (!session || !note) return;
 
+  const cloudNote = {
+    id: note.id,
+    user_id: session.user.id,
+
+    title: note.title || "",
+
+    body_html: note.bodyHtml || "",
+    body_text: getNoteText(note) || "",
+
+    type: note.type || "note",
+
+    checklist: Array.isArray(note.checklist)
+      ? note.checklist
+      : [],
+
+    color: note.color || "default",
+    label: note.label || "",
+
+    favorite: Boolean(note.favorite),
+    pinned: Boolean(note.pinned),
+    archived: Boolean(note.archived),
+    trashed: Boolean(note.trashed),
+
+    reminder_at: note.reminderAt || null,
+
+    created_at: new Date(note.createdAt).toISOString(),
+    updated_at: new Date(note.updatedAt).toISOString()
+  };
+
+  const { error } = await supabase
+    .from("notes")
+    .upsert(cloudNote, {
+      onConflict: "id"
+    });
+
+  if (error) {
+    console.error("Notely cloud sync error:", error);
+    showToast("Cloud sync failed");
+    return;
+  }
+
+  console.log("Notely: note synced to cloud", note.id);
+}
 function cryptoRandomId() {
   if (window.crypto && crypto.randomUUID) {
     return crypto.randomUUID();
