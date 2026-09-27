@@ -953,7 +953,7 @@ function archiveNote(id) {
   note.trashed = false;
   note.updatedAt = Date.now();
 
-  saveState();
+  saveState(note);
   render();
 }
 
