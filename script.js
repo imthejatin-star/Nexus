@@ -1,95 +1,391 @@
 "use strict";
 
-const STORAGE_KEY = "notely_premium_v2";
+/*
+  NOTELY
+  Premium local-first notes + checklist application.
 
-let state = {
-  notes: [],
-  filter: "all",
-  sort: "recent",
-  search: "",
-  editingId: null,
-  editorType: "note",
-  editorColor: "default",
-  editorPinned: false,
-  dark: true,
-  undoNote: null,
-  undoTimer: null
-};
+  Storage:
+  notely_premium_v2
+
+  This version is designed to gracefully migrate notes from
+  the previous Notely version.
+*/
+
+const STORAGE_KEY = "notely_premium_v2";
+const THEME_KEY = "notely_theme_v2";
+const DRAFT_KEY = "notely_editor_draft_v2";
+
+let state = loadState();
+
+let activeFilter = "all";
+let activeLabel = "";
+let searchTerm = "";
+let sortMode = "updated";
+
+let editorMode = "note";
+let editingId = null;
+let editorDirty = false;
+let editorOriginalSnapshot = "";
+let checklistItems = [];
+let showCompleted = true;
+
+let undoData = null;
+let toastTimer = null;
+let autosaveTimer = null;
+
+let contextNoteId = null;
+
+
+/* =========================================================
+   INITIAL STATE
+========================================================= */
+
+function defaultState() {
+  return {
+    notes: [],
+    labels: ["School", "Personal", "Ideas"],
+    version: 2
+  };
+}
+
+function normalizeNote(note) {
+  const now = Date.now();
+
+  const normalized = {
+    id: note.id || cryptoRandomId(),
+    type: note.type === "checklist" ? "checklist" : "note",
+
+    title: typeof note.title === "string" ? note.title : "",
+    body: typeof note.body === "string" ? note.body : "",
+    bodyHtml:
+      typeof note.bodyHtml === "string"
+        ? note.bodyHtml
+        : escapeHTML(note.body || "").replace(/\n/g, "<br>"),
+
+    checklist: Array.isArray(note.checklist)
+      ? note.checklist.map(item => ({
+          id: item.id || cryptoRandomId(),
+          text: typeof item.text === "string" ? item.text : "",
+          done: Boolean(item.done)
+        }))
+      : [],
+
+    color: note.color || "default",
+    label: typeof note.label === "string" ? note.label : "",
+
+    pinned: Boolean(note.pinned),
+    favorite: Boolean(note.favorite),
+    archived: Boolean(note.archived),
+    trashed: Boolean(note.trashed),
+
+    reminderAt: note.reminderAt || "",
+
+    createdAt: Number(note.createdAt) || now,
+    updatedAt: Number(note.updatedAt) || now,
+
+    reminderNotified: Boolean(note.reminderNotified)
+  };
+
+  return normalized;
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+
+    if (!raw) return defaultState();
+
+    const parsed = JSON.parse(raw);
+
+    if (Array.isArray(parsed)) {
+      return {
+        notes: parsed.map(normalizeNote),
+        labels: ["School", "Personal", "Ideas"],
+        version: 2
+      };
+    }
+
+    return {
+      notes: Array.isArray(parsed.notes)
+        ? parsed.notes.map(normalizeNote)
+        : [],
+      labels: Array.isArray(parsed.labels) && parsed.labels.length
+        ? [...new Set([
+            "School",
+            "Personal",
+            "Ideas",
+            ...parsed.labels
+              .filter(x => typeof x === "string")
+              .map(x => x.trim())
+              .filter(Boolean)
+          ])]
+        : ["School", "Personal", "Ideas"],
+      version: 2
+    };
+  } catch (error) {
+    console.error("Could not load Notely data:", error);
+    return defaultState();
+  }
+}
+
+function saveState() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function cryptoRandomId() {
+  if (window.crypto && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+
+  return "n_" + Date.now() + "_" + Math.random().toString(36).slice(2);
+}
+
+
+/* =========================================================
+   DOM
+========================================================= */
 
 const $ = id => document.getElementById(id);
 
-function uid(){
-  return Date.now().toString(36) + Math.random().toString(36).slice(2,9);
-}
+const notesGrid = $("notesGrid");
+const emptyState = $("emptyState");
+const emptyTitle = $("emptyTitle");
+const emptyText = $("emptyText");
 
-function saveState(){
-  localStorage.setItem(STORAGE_KEY,JSON.stringify({
-    notes:state.notes,
-    dark:state.dark
-  }));
-}
+const editor = $("editor");
+const overlay = $("overlay");
 
-function loadState(){
-  try{
-    const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+const noteTitle = $("noteTitle");
+const richEditor = $("richEditor");
+const checklistEditor = $("checklistEditor");
+const checklistItemsEl = $("checklistItems");
 
-    if(Array.isArray(data.notes)){
-      state.notes = data.notes;
-    }
+const noteLabel = $("noteLabel");
+const noteReminder = $("noteReminder");
 
-    if(typeof data.dark === "boolean"){
-      state.dark = data.dark;
-    }
-  }catch{
-    state.notes = [];
-  }
+const toast = $("toast");
+const undoBar = $("undoBar");
+const contextMenu = $("contextMenu");
 
-  document.body.classList.toggle("light",!state.dark);
-}
 
-function escapeHTML(value=""){
+/* =========================================================
+   UTILITIES
+========================================================= */
+
+function escapeHTML(value) {
   return String(value)
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
-function formatDate(timestamp){
-  const d = new Date(timestamp);
-  const now = new Date();
+function stripHTML(html) {
+  const temp = document.createElement("div");
+  temp.innerHTML = html || "";
+  return temp.textContent || temp.innerText || "";
+}
 
-  if(d.toDateString() === now.toDateString()){
-    return d.toLocaleTimeString([],{
-      hour:"numeric",
-      minute:"2-digit"
+function sanitizeHTML(html) {
+  const template = document.createElement("template");
+  template.innerHTML = html || "";
+
+  const allowed = [
+    "B",
+    "STRONG",
+    "I",
+    "EM",
+    "U",
+    "H2",
+    "P",
+    "BR",
+    "UL",
+    "OL",
+    "LI"
+  ];
+
+  function clean(parent) {
+    [...parent.children].forEach(child => {
+      if (!allowed.includes(child.tagName)) {
+        const fragment = document.createDocumentFragment();
+
+        while (child.firstChild) {
+          fragment.appendChild(child.firstChild);
+        }
+
+        child.replaceWith(fragment);
+        return;
+      }
+
+      [...child.attributes].forEach(attr => {
+        child.removeAttribute(attr.name);
+      });
+
+      clean(child);
     });
   }
 
-  return d.toLocaleDateString([],{
-    day:"numeric",
-    month:"short"
+  clean(template.content);
+
+  return template.innerHTML;
+}
+
+function formatDate(timestamp) {
+  if (!timestamp) return "";
+
+  const date = new Date(timestamp);
+  const now = new Date();
+
+  if (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  ) {
+    return date.toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit"
+    });
+  }
+
+  return date.toLocaleDateString([], {
+    month: "short",
+    day: "numeric"
   });
 }
 
-function updateDate(){
+function formatFullDate(timestamp) {
+  return new Date(timestamp).toLocaleString([], {
+    dateStyle: "medium",
+    timeStyle: "short"
+  });
+}
+
+function formatReminder(value) {
+  if (!value) return "";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) return "";
+
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  });
+}
+
+function getNoteText(note) {
+  if (note.type === "checklist") {
+    return note.checklist
+      .map(item => item.text)
+      .join(" ");
+  }
+
+  return stripHTML(note.bodyHtml || note.body || "");
+}
+
+function getPreview(note) {
+  return getNoteText(note).replace(/\s+/g, " ").trim();
+}
+
+function getTaskStats(note) {
+  const total = note.checklist.length;
+  const completed = note.checklist.filter(item => item.done).length;
+
+  return {
+    total,
+    completed,
+    percentage: total ? Math.round((completed / total) * 100) : 0
+  };
+}
+
+function isReminderDue(note) {
+  if (!note.reminderAt) return false;
+
+  const time = new Date(note.reminderAt).getTime();
+
+  return Number.isFinite(time) && time <= Date.now() && !note.trashed;
+}
+
+function getReminderFuture(note) {
+  if (!note.reminderAt) return false;
+
+  const time = new Date(note.reminderAt).getTime();
+
+  return Number.isFinite(time) && time > Date.now();
+}
+
+function escapeAttr(value) {
+  return escapeHTML(value);
+}
+
+
+/* =========================================================
+   TOAST
+========================================================= */
+
+function showToast(message) {
+  clearTimeout(toastTimer);
+
+  toast.textContent = message;
+  toast.classList.add("show");
+
+  toastTimer = setTimeout(() => {
+    toast.classList.remove("show");
+  }, 2200);
+}
+
+
+/* =========================================================
+   THEME
+========================================================= */
+
+function loadTheme() {
+  const theme = localStorage.getItem(THEME_KEY);
+
+  if (theme === "light") {
+    document.body.classList.add("light");
+  }
+}
+
+function toggleTheme() {
+  document.body.classList.toggle("light");
+
+  localStorage.setItem(
+    THEME_KEY,
+    document.body.classList.contains("light")
+      ? "light"
+      : "dark"
+  );
+}
+
+
+/* =========================================================
+   DATE / PAGE
+========================================================= */
+
+function updateDate() {
+  const now = new Date();
+
   $("dateLabel").textContent =
-    new Date().toLocaleDateString([],{
-      weekday:"long",
-      day:"numeric",
-      month:"long"
+    now.toLocaleDateString([], {
+      weekday: "long",
+      month: "long",
+      day: "numeric"
     }).toUpperCase();
 }
 
-function getVisibleNotes(){
+
+/* =========================================================
+   FILTERING
+========================================================= */
+
+function getFilteredNotes() {
   let result = [...state.notes];
 
-  if(state.filter === "all"){
-    result = result.filter(n => !n.archived && !n.trashed);
-  }
-
-  if(state.filter === "notes"){
+  if (activeFilter === "notes") {
     result = result.filter(n =>
       n.type === "note" &&
       !n.archived &&
@@ -97,15 +393,23 @@ function getVisibleNotes(){
     );
   }
 
-  if(state.filter === "tasks"){
+  if (activeFilter === "tasks") {
     result = result.filter(n =>
-      n.type === "task" &&
+      n.type === "checklist" &&
       !n.archived &&
       !n.trashed
     );
   }
 
-  if(state.filter === "pinned"){
+  if (activeFilter === "favorites") {
+    result = result.filter(n =>
+      n.favorite &&
+      !n.archived &&
+      !n.trashed
+    );
+  }
+
+  if (activeFilter === "pinned") {
     result = result.filter(n =>
       n.pinned &&
       !n.archived &&
@@ -113,906 +417,2215 @@ function getVisibleNotes(){
     );
   }
 
-  if(state.filter === "archive"){
+  if (activeFilter === "archive") {
     result = result.filter(n =>
       n.archived &&
       !n.trashed
     );
   }
 
-  if(state.filter === "trash"){
+  if (activeFilter === "trash") {
     result = result.filter(n => n.trashed);
   }
 
-  if(state.search.trim()){
-    const q = state.search.toLowerCase();
+  if (activeFilter === "all") {
+    result = result.filter(n =>
+      !n.archived &&
+      !n.trashed
+    );
+  }
 
-    result = result.filter(n => {
-      const taskText = (n.items || [])
-        .map(i => i.text)
-        .join(" ");
+  if (activeLabel) {
+    result = result.filter(n => n.label === activeLabel);
+  }
 
-      return (
-        (n.title || "").toLowerCase().includes(q) ||
-        (n.body || "").toLowerCase().includes(q) ||
-        taskText.toLowerCase().includes(q)
-      );
+  if (searchTerm) {
+    const q = searchTerm.toLowerCase();
+
+    result = result.filter(note => {
+      const haystack = [
+        note.title,
+        getNoteText(note),
+        note.label,
+        note.type
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return haystack.includes(q);
     });
   }
 
-  if(state.sort === "recent"){
-    result.sort((a,b) => b.updatedAt - a.updatedAt);
-  }
+  result.sort((a, b) => {
+    if (sortMode === "updated") {
+      return b.updatedAt - a.updatedAt;
+    }
 
-  if(state.sort === "created"){
-    result.sort((a,b) => b.createdAt - a.createdAt);
-  }
+    if (sortMode === "created") {
+      return b.createdAt - a.createdAt;
+    }
 
-  if(state.sort === "az"){
-    result.sort((a,b) =>
-      (a.title || "").localeCompare(b.title || "")
-    );
-  }
+    if (sortMode === "az") {
+      return a.title.localeCompare(b.title);
+    }
 
-  if(state.sort === "za"){
-    result.sort((a,b) =>
-      (b.title || "").localeCompare(a.title || "")
-    );
-  }
+    if (sortMode === "za") {
+      return b.title.localeCompare(a.title);
+    }
 
-  result.sort((a,b) => {
-    if(a.pinned && !b.pinned) return -1;
-    if(!a.pinned && b.pinned) return 1;
-    return 0;
+    if (sortMode === "reminder") {
+      const ar = a.reminderAt
+        ? new Date(a.reminderAt).getTime()
+        : Infinity;
+
+      const br = b.reminderAt
+        ? new Date(b.reminderAt).getTime()
+        : Infinity;
+
+      return ar - br;
+    }
+
+    return b.updatedAt - a.updatedAt;
   });
 
   return result;
 }
 
-function updateHeading(){
-  const titles = {
-    all:"Everything in one place.",
-    notes:"Your notes.",
-    tasks:"Your checklists.",
-    pinned:"Pinned for later.",
-    archive:"Archived quietly.",
-    trash:"Recently deleted."
-  };
 
-  $("pageTitle").textContent = titles[state.filter];
+/* =========================================================
+   RENDER
+========================================================= */
 
-  document.querySelectorAll(".tab").forEach(tab => {
-    tab.classList.toggle(
-      "active",
-      tab.dataset.filter === state.filter
-    );
+function render() {
+  renderStats();
+  renderLabels();
+  renderNotes();
+  updatePageTitle();
+}
+
+function renderStats() {
+  const active = state.notes.filter(n =>
+    !n.archived && !n.trashed
+  );
+
+  $("noteCount").textContent =
+    active.filter(n => n.type === "note").length;
+
+  $("taskCount").textContent =
+    active.filter(n => n.type === "checklist").length;
+
+  $("favoriteCount").textContent =
+    active.filter(n => n.favorite).length;
+}
+
+function renderLabels() {
+  const container = $("labelFilters");
+
+  const labels = [...new Set(
+    state.notes
+      .map(n => n.label)
+      .filter(Boolean)
+      .concat(state.labels || [])
+  )];
+
+  container.innerHTML = "";
+
+  const allButton = document.createElement("button");
+  allButton.className =
+    "label-filter" + (!activeLabel ? " active" : "");
+  allButton.textContent = "All";
+  allButton.addEventListener("click", () => {
+    activeLabel = "";
+    render();
+  });
+
+  container.appendChild(allButton);
+
+  labels.forEach(label => {
+    const button = document.createElement("button");
+
+    button.className =
+      "label-filter" +
+      (activeLabel === label ? " active" : "");
+
+    button.textContent = label;
+
+    button.addEventListener("click", () => {
+      activeLabel = activeLabel === label ? "" : label;
+      render();
+    });
+
+    container.appendChild(button);
   });
 }
 
-function updateStats(){
-  const active = state.notes.filter(n => !n.archived && !n.trashed);
-  const notes = active.filter(n => n.type === "note").length;
-  const tasks = active.filter(n => n.type === "task").length;
-  const pinned = active.filter(n => n.pinned).length;
+function renderNotes() {
+  const notes = getFilteredNotes();
 
-  $("stats").textContent =
-    `${active.length} items · ${notes} notes · ${tasks} checklists · ${pinned} pinned`;
-}
+  notesGrid.innerHTML = "";
 
-function render(){
-  updateHeading();
-  updateStats();
+  $("resultCount").textContent = notes.length;
 
-  const notes = getVisibleNotes();
+  if (!notes.length) {
+    notesGrid.style.display = "none";
+    emptyState.style.display = "block";
 
-  $("notesGrid").innerHTML = "";
-
-  if(!notes.length){
-    $("notesGrid").classList.add("hidden");
-    $("emptyState").classList.remove("hidden");
-
-    if(state.search){
-      $("emptyTitle").textContent = "No matches found";
-      $("emptyText").textContent =
-        "Try another title, task or keyword.";
-      $("emptyCreate").classList.add("hidden");
-    }else{
-      $("emptyCreate").classList.remove("hidden");
-
-      const messages = {
-        all:["Nothing here yet","Create your first note to get started."],
-        notes:["No notes yet","Your written notes will appear here."],
-        tasks:["No checklists yet","Turn your plans into simple tasks."],
-        pinned:["Nothing pinned","Pin important items to keep them close."],
-        archive:["Archive is empty","Quietly store notes you don't need right now."],
-        trash:["Trash is empty","Deleted items will appear here."]
-      };
-
-      $("emptyTitle").textContent = messages[state.filter][0];
-      $("emptyText").textContent = messages[state.filter][1];
-    }
+    setEmptyMessage();
 
     return;
   }
 
-  $("emptyState").classList.add("hidden");
-  $("notesGrid").classList.remove("hidden");
+  notesGrid.style.display = "grid";
+  emptyState.style.display = "none";
 
-  notes.forEach((note,index) => {
-    const card = createCard(note);
-    card.style.animationDelay = `${Math.min(index * 35,300)}ms`;
-    $("notesGrid").appendChild(card);
+  notes.forEach((note, index) => {
+    notesGrid.appendChild(createCard(note, index));
   });
 }
 
-function createCard(note){
+function setEmptyMessage() {
+  const messages = {
+    all: [
+      "Nothing here yet",
+      "Create your first note and make this space yours."
+    ],
+    notes: [
+      "No notes",
+      "Create a note to start writing."
+    ],
+    tasks: [
+      "No checklists",
+      "Create a checklist to plan your work."
+    ],
+    favorites: [
+      "No favorites",
+      "Favorite important notes to find them quickly."
+    ],
+    pinned: [
+      "Nothing pinned",
+      "Pin important notes to keep them at the top."
+    ],
+    archive: [
+      "Archive is empty",
+      "Archived notes will appear here."
+    ],
+    trash: [
+      "Trash is empty",
+      "Deleted notes will appear here."
+    ]
+  };
+
+  const message = messages[activeFilter] || messages.all;
+
+  emptyTitle.textContent = message[0];
+  emptyText.textContent = message[1];
+
+  $("emptyCreateBtn").style.display =
+    activeFilter === "trash" ||
+    activeFilter === "archive"
+      ? "none"
+      : "inline-flex";
+}
+
+function updatePageTitle() {
+  const titles = {
+    all: "All notes",
+    notes: "Notes",
+    tasks: "Tasks",
+    favorites: "Favorites",
+    pinned: "Pinned",
+    archive: "Archive",
+    trash: "Trash"
+  };
+
+  $("collectionTitle").textContent =
+    activeLabel
+      ? activeLabel
+      : titles[activeFilter] || "All notes";
+}
+
+
+/* =========================================================
+   NOTE CARD
+========================================================= */
+
+function createCard(note, index) {
   const card = document.createElement("article");
 
   card.className =
-    `note-card ${note.color || "default"} ${note.pinned ? "pinned" : ""}`;
+    `note-card ${note.color || "default"}`;
 
-  if(note.type === "task"){
-    const items = note.items || [];
-    const completed = items.filter(i => i.done).length;
-    const percent = items.length
-      ? Math.round(completed / items.length * 100)
-      : 0;
+  card.dataset.id = note.id;
 
-    const visible = items.slice(0,4).map(item => `
-      <div class="task-line ${item.done ? "done" : ""}">
-        <span class="task-check ${item.done ? "checked" : ""}"></span>
-        <span>${escapeHTML(item.text || "Untitled task")}</span>
-      </div>
-    `).join("");
+  card.style.animationDelay = `${Math.min(index * 35, 250)}ms`;
 
-    card.innerHTML = `
-      ${note.pinned ? `<div class="pin-indicator">●</div>` : ""}
-      <div class="card-type">Checklist · ${completed}/${items.length}</div>
-      <h3>${escapeHTML(note.title || "Untitled checklist")}</h3>
+  const title = note.title.trim() || "Untitled";
+
+  const type = note.type === "checklist"
+    ? "CHECKLIST"
+    : "NOTE";
+
+  let content = "";
+
+  if (note.type === "checklist") {
+    const stats = getTaskStats(note);
+
+    const visibleItems = note.checklist.slice(0, 3);
+
+    content = `
       <div class="task-preview">
-        ${visible || `<div class="card-text">No items yet.</div>`}
-      </div>
-      <div class="progress">
-        <span style="width:${percent}%"></span>
-      </div>
-      <div class="card-footer">
-        <span>${formatDate(note.updatedAt)}</span>
-        <div class="card-actions">
-          <button data-action="edit">↗</button>
-          ${
-            note.trashed
-            ? `
-              <button data-action="restore">↶</button>
-              <button data-action="delete">×</button>
-            `
-            : `
-              <button data-action="archive">□</button>
-              <button data-action="delete">×</button>
-            `
-          }
-        </div>
+        ${visibleItems.map(item => `
+          <div class="task-row-mini ${item.done ? "done" : ""}">
+            <span class="mini-check"></span>
+            <span>${escapeHTML(item.text)}</span>
+          </div>
+        `).join("")}
+
+        ${note.checklist.length > 3
+          ? `<div class="card-meta" style="margin-top:8px">
+              +${note.checklist.length - 3} more
+             </div>`
+          : ""}
       </div>
     `;
-  }else{
-    card.innerHTML = `
-      ${note.pinned ? `<div class="pin-indicator">●</div>` : ""}
-      <div class="card-type">Note</div>
-      <h3>${escapeHTML(note.title || "Untitled note")}</h3>
-      <div class="card-text">
-        ${escapeHTML(note.body || "Empty note")}
-      </div>
-      <div class="card-footer">
-        <span>${formatDate(note.updatedAt)}</span>
-        <div class="card-actions">
-          <button data-action="edit">↗</button>
-          ${
-            note.trashed
-            ? `
-              <button data-action="restore">↶</button>
-              <button data-action="delete">×</button>
-            `
-            : `
-              <button data-action="archive">□</button>
-              <button data-action="delete">×</button>
-            `
-          }
-        </div>
+  } else {
+    const safeHTML = sanitizeHTML(note.bodyHtml || "");
+
+    content = `
+      <div class="card-preview">
+        ${safeHTML || escapeHTML(getPreview(note) || "Empty note")}
       </div>
     `;
   }
 
-  let startX = 0;
-  let moved = false;
+  const stats =
+    note.type === "checklist"
+      ? getTaskStats(note)
+      : null;
 
-  card.addEventListener("touchstart",e => {
-    startX = e.changedTouches[0].clientX;
-    moved = false;
-  },{passive:true});
+  card.innerHTML = `
+    <div class="card-top">
+      <span class="card-type">${type}</span>
 
-  card.addEventListener("touchmove",e => {
-    if(Math.abs(e.changedTouches[0].clientX - startX) > 12){
-      moved = true;
-    }
-  },{passive:true});
+      <div class="card-actions">
 
-  card.addEventListener("touchend",e => {
-    const delta = e.changedTouches[0].clientX - startX;
+        <button
+          class="card-action"
+          data-action="favorite"
+          title="Favorite"
+        >${note.favorite ? "★" : "☆"}</button>
 
-    if(Math.abs(delta) > 75){
-      if(delta > 0 && !note.trashed){
-        togglePin(note.id);
-      }else if(delta < 0 && !note.trashed){
-        archiveNote(note.id);
-      }
+        <button
+          class="card-action"
+          data-action="pin"
+          title="Pin"
+        >${note.pinned ? "⌖" : "◇"}</button>
 
+        <button
+          class="card-action"
+          data-action="more"
+          title="More"
+        >•••</button>
+
+      </div>
+    </div>
+
+    <h3 class="card-title">${escapeHTML(title)}</h3>
+
+    ${content}
+
+    <div class="card-footer">
+
+      <div class="card-meta">
+        ${formatDate(note.updatedAt)}
+        ${note.reminderAt ? " · " + escapeHTML(formatReminder(note.reminderAt)) : ""}
+      </div>
+
+      <div class="card-badges">
+
+        ${
+          note.label
+            ? `<span class="badge">${escapeHTML(note.label)}</span>`
+            : ""
+        }
+
+        ${
+          note.reminderAt
+            ? `<span class="badge reminder-badge">
+                ${isReminderDue(note) ? "Due" : "Reminder"}
+               </span>`
+            : ""
+        }
+
+        ${
+          stats
+            ? `
+              <span class="badge">
+                ${stats.completed}/${stats.total}
+              </span>
+              <span class="progress-mini">
+                <span style="width:${stats.percentage}%"></span>
+              </span>
+            `
+            : ""
+        }
+
+      </div>
+
+    </div>
+  `;
+
+  card.addEventListener("click", event => {
+    if (
+      event.target.closest(".card-action")
+    ) {
       return;
     }
 
-    if(moved) return;
-
-    const action =
-      e.target.closest("[data-action]")?.dataset.action;
-
-    if(action){
-      handleCardAction(action,note.id);
-    }else if(!note.trashed){
-      openEditor(note.id);
-    }
+    openEditor(note.id);
   });
 
-  card.addEventListener("click",e => {
-    const action =
-      e.target.closest("[data-action]")?.dataset.action;
+  card.querySelector('[data-action="favorite"]')
+    .addEventListener("click", event => {
+      event.stopPropagation();
+      toggleFavorite(note.id);
+    });
 
-    if(action){
-      handleCardAction(action,note.id);
-    }else if(!note.trashed){
-      openEditor(note.id);
-    }
-  });
+  card.querySelector('[data-action="pin"]')
+    .addEventListener("click", event => {
+      event.stopPropagation();
+      togglePin(note.id);
+    });
+
+  card.querySelector('[data-action="more"]')
+    .addEventListener("click", event => {
+      event.stopPropagation();
+      openContextMenu(note.id, event.currentTarget);
+    });
+
+  addSwipe(card, note.id);
 
   return card;
 }
 
-function handleCardAction(action,id){
-  const note = state.notes.find(n => n.id === id);
-  if(!note) return;
 
-  if(action === "edit"){
-    openEditor(id);
-    return;
-  }
+/* =========================================================
+   SWIPE
+========================================================= */
 
-  if(action === "archive"){
-    archiveNote(id);
-    return;
-  }
+function addSwipe(element, id) {
+  let startX = 0;
+  let startY = 0;
 
-  if(action === "restore"){
-    note.trashed = false;
-    note.archived = false;
-    note.updatedAt = Date.now();
+  element.addEventListener("touchstart", event => {
+    const touch = event.changedTouches[0];
 
-    saveState();
-    render();
-    toast("Restored");
-    return;
-  }
+    startX = touch.clientX;
+    startY = touch.clientY;
+  }, { passive: true });
 
-  if(action === "delete"){
-    deleteNote(id);
-  }
+  element.addEventListener("touchend", event => {
+    const touch = event.changedTouches[0];
+
+    const dx = touch.clientX - startX;
+    const dy = touch.clientY - startY;
+
+    if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy)) {
+      return;
+    }
+
+    if (dx > 0) {
+      togglePin(id);
+      showToast("Pin updated");
+    } else {
+      archiveNote(id);
+      showToast("Moved to archive");
+    }
+  }, { passive: true });
 }
 
-function togglePin(id){
-  const note = state.notes.find(n => n.id === id);
-  if(!note) return;
+
+/* =========================================================
+   NOTE ACTIONS
+========================================================= */
+
+function findNote(id) {
+  return state.notes.find(note => note.id === id);
+}
+
+function togglePin(id) {
+  const note = findNote(id);
+
+  if (!note) return;
 
   note.pinned = !note.pinned;
   note.updatedAt = Date.now();
 
   saveState();
   render();
-
-  toast(note.pinned ? "Pinned" : "Unpinned");
 }
 
-function archiveNote(id){
-  const note = state.notes.find(n => n.id === id);
-  if(!note) return;
+function toggleFavorite(id) {
+  const note = findNote(id);
 
-  note.archived = !note.archived;
+  if (!note) return;
+
+  note.favorite = !note.favorite;
   note.updatedAt = Date.now();
 
   saveState();
   render();
 
-  toast(note.archived ? "Moved to archive" : "Restored from archive");
+  showToast(
+    note.favorite
+      ? "Added to favorites"
+      : "Removed from favorites"
+  );
 }
 
-function deleteNote(id){
-  const index = state.notes.findIndex(n => n.id === id);
+function archiveNote(id) {
+  const note = findNote(id);
 
-  if(index === -1) return;
+  if (!note) return;
 
-  const note = state.notes[index];
+  note.archived = true;
+  note.trashed = false;
+  note.updatedAt = Date.now();
 
-  if(note.trashed){
-    state.notes.splice(index,1);
-    saveState();
-    render();
-    toast("Deleted permanently");
-    return;
-  }
+  saveState();
+  render();
+}
+
+function restoreNote(id) {
+  const note = findNote(id);
+
+  if (!note) return;
+
+  note.trashed = false;
+  note.archived = false;
+  note.updatedAt = Date.now();
+
+  saveState();
+  render();
+
+  showToast("Note restored");
+}
+
+function restoreArchive(id) {
+  const note = findNote(id);
+
+  if (!note) return;
+
+  note.archived = false;
+  note.updatedAt = Date.now();
+
+  saveState();
+  render();
+
+  showToast("Note restored");
+}
+
+function duplicateNote(id) {
+  const original = findNote(id);
+
+  if (!original) return;
+
+  const copy = normalizeNote({
+    ...original,
+    id: cryptoRandomId(),
+    title: original.title
+      ? `${original.title} Copy`
+      : "Untitled Copy",
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    pinned: false,
+    favorite: false,
+    archived: false,
+    trashed: false,
+    reminderNotified: false,
+
+    checklist: original.checklist.map(item => ({
+      ...item,
+      id: cryptoRandomId()
+    }))
+  });
+
+  state.notes.unshift(copy);
+
+  saveState();
+  render();
+
+  showToast("Note duplicated");
+}
+
+function moveToTrash(id) {
+  const note = findNote(id);
+
+  if (!note) return;
+
+  undoData = {
+    id,
+    previous: {
+      trashed: note.trashed,
+      archived: note.archived
+    }
+  };
 
   note.trashed = true;
   note.archived = false;
   note.updatedAt = Date.now();
 
-  state.undoNote = {
-    note:JSON.parse(JSON.stringify(note)),
-    index
-  };
+  saveState();
+  render();
 
-  clearTimeout(state.undoTimer);
+  showUndo();
+}
 
-  state.undoTimer = setTimeout(() => {
-    state.undoNote = null;
-    $("undoBar").classList.remove("show");
-  },5000);
+function permanentlyDelete(id) {
+  state.notes = state.notes.filter(note => note.id !== id);
 
   saveState();
   render();
 
-  $("undoMessage").textContent = "Moved to trash";
-  $("undoBar").classList.add("show");
+  showToast("Deleted permanently");
 }
 
-function undoDelete(){
-  if(!state.undoNote) return;
+function emptyTrash() {
+  state.notes = state.notes.filter(note => !note.trashed);
 
-  const existing = state.notes.find(
-    n => n.id === state.undoNote.note.id
-  );
+  saveState();
+  render();
 
-  if(existing){
-    existing.trashed = false;
-    existing.updatedAt = Date.now();
-  }else{
-    state.notes.splice(
-      Math.min(state.undoNote.index,state.notes.length),
-      0,
-      state.undoNote.note
-    );
+  showToast("Trash emptied");
+}
+
+
+/* =========================================================
+   UNDO
+========================================================= */
+
+function showUndo() {
+  undoBar.classList.add("show");
+
+  setTimeout(() => {
+    undoBar.classList.remove("show");
+    undoData = null;
+  }, 4500);
+}
+
+$("undoBtn").addEventListener("click", () => {
+  if (!undoData) return;
+
+  const note = findNote(undoData.id);
+
+  if (note) {
+    note.trashed = undoData.previous.trashed;
+    note.archived = undoData.previous.archived;
+
+    saveState();
+    render();
   }
 
-  saveState();
-  render();
+  undoData = null;
+  undoBar.classList.remove("show");
 
-  state.undoNote = null;
-  clearTimeout(state.undoTimer);
-  $("undoBar").classList.remove("show");
+  showToast("Restored");
+});
 
-  toast("Restored");
+
+/* =========================================================
+   CONTEXT MENU
+========================================================= */
+
+function openContextMenu(id, target) {
+  const note = findNote(id);
+
+  if (!note) return;
+
+  contextNoteId = id;
+
+  contextMenu.innerHTML = "";
+
+  const actions = [];
+
+  if (note.trashed) {
+    actions.push({
+      label: "Restore",
+      action: "restore"
+    });
+
+    actions.push({
+      label: "Delete permanently",
+      action: "permanent-delete",
+      danger: true
+    });
+  } else if (note.archived) {
+    actions.push({
+      label: "Restore from archive",
+      action: "restore-archive"
+    });
+
+    actions.push({
+      label: "Delete",
+      action: "delete",
+      danger: true
+    });
+  } else {
+    actions.push({
+      label: "Edit",
+      action: "edit"
+    });
+
+    actions.push({
+      label: note.favorite
+        ? "Remove favorite"
+        : "Add favorite",
+      action: "favorite"
+    });
+
+    actions.push({
+      label: note.pinned
+        ? "Unpin"
+        : "Pin",
+      action: "pin"
+    });
+
+    actions.push({
+      label: "Duplicate",
+      action: "duplicate"
+    });
+
+    actions.push({
+      label: "Share / copy",
+      action: "share"
+    });
+
+    actions.push({
+      label: "Archive",
+      action: "archive"
+    });
+
+    actions.push({
+      label: "Move to trash",
+      action: "delete",
+      danger: true
+    });
+  }
+
+  actions.forEach(item => {
+    const button = document.createElement("button");
+
+    if (item.danger) {
+      button.classList.add("danger");
+    }
+
+    button.textContent = item.label;
+
+    button.addEventListener("click", () => {
+      closeContextMenu();
+      handleContextAction(item.action, id);
+    });
+
+    contextMenu.appendChild(button);
+  });
+
+  const rect = target.getBoundingClientRect();
+
+  const width = 185;
+
+  let left = rect.right - width;
+  let top = rect.bottom + 7;
+
+  if (left < 10) left = 10;
+
+  if (left + width > window.innerWidth - 10) {
+    left = window.innerWidth - width - 10;
+  }
+
+  if (top + 300 > window.innerHeight) {
+    top = rect.top - 300;
+  }
+
+  contextMenu.style.left = `${left}px`;
+  contextMenu.style.top = `${Math.max(10, top)}px`;
+
+  contextMenu.classList.add("open");
 }
 
-function resetEditor(){
-  state.editingId = null;
-  state.editorType = "note";
-  state.editorColor = "default";
-  state.editorPinned = false;
-
-  $("editorTitle").textContent = "New note";
-  $("noteTitle").value = "";
-  $("noteBody").value = "";
-
-  $("noteBody").classList.remove("hidden");
-  $("checklistEditor").classList.add("hidden");
-  $("checkItems").innerHTML = "";
-
-  setColor("default");
-  updatePinButton();
+function closeContextMenu() {
+  contextMenu.classList.remove("open");
+  contextNoteId = null;
 }
 
-function openEditor(id=null,type="note"){
+function handleContextAction(action, id) {
+  switch (action) {
+    case "edit":
+      openEditor(id);
+      break;
+
+    case "favorite":
+      toggleFavorite(id);
+      break;
+
+    case "pin":
+      togglePin(id);
+      break;
+
+    case "duplicate":
+      duplicateNote(id);
+      break;
+
+    case "share":
+      shareNote(id);
+      break;
+
+    case "archive":
+      archiveNote(id);
+      showToast("Moved to archive");
+      break;
+
+    case "delete":
+      moveToTrash(id);
+      break;
+
+    case "restore":
+      restoreNote(id);
+      break;
+
+    case "restore-archive":
+      restoreArchive(id);
+      break;
+
+    case "permanent-delete":
+      askDialog(
+        "Delete permanently?",
+        "This note cannot be recovered after permanent deletion.",
+        () => permanentlyDelete(id)
+      );
+      break;
+  }
+}
+
+
+/* =========================================================
+   SHARE
+========================================================= */
+
+async function shareNote(id) {
+  const note = findNote(id);
+
+  if (!note) return;
+
+  const text = buildShareText(note);
+
+  try {
+    if (navigator.share) {
+      await navigator.share({
+        title: note.title || "Notely note",
+        text
+      });
+
+      return;
+    }
+
+    await navigator.clipboard.writeText(text);
+
+    showToast("Copied to clipboard");
+  } catch (error) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("Copied to clipboard");
+    } catch {
+      showToast("Could not share note");
+    }
+  }
+}
+
+function buildShareText(note) {
+  let output = note.title || "Untitled";
+
+  output += "\n\n";
+
+  if (note.type === "checklist") {
+    output += note.checklist
+      .map(item =>
+        `${item.done ? "✓" : "□"} ${item.text}`
+      )
+      .join("\n");
+  } else {
+    output += stripHTML(note.bodyHtml || "");
+  }
+
+  if (note.label) {
+    output += `\n\nLabel: ${note.label}`;
+  }
+
+  return output.trim();
+}
+
+
+/* =========================================================
+   EDITOR
+========================================================= */
+
+function openEditor(id = null, type = "note") {
   closeCreateMenu();
+  closeMenu();
+  closeContextMenu();
 
-  if(id){
-    const note = state.notes.find(n => n.id === id);
-    if(!note) return;
+  editingId = id;
 
-    state.editingId = id;
-    state.editorType = note.type;
-    state.editorColor = note.color || "default";
-    state.editorPinned = !!note.pinned;
+  if (id) {
+    const note = findNote(id);
 
-    $("editorTitle").textContent =
-      note.type === "task"
-      ? "Edit checklist"
-      : "Edit note";
+    if (!note) return;
 
-    $("noteTitle").value = note.title || "";
+    editorMode = note.type;
 
-    if(note.type === "note"){
-      $("noteBody").classList.remove("hidden");
-      $("checklistEditor").classList.add("hidden");
-      $("noteBody").value = note.body || "";
-    }else{
-      $("noteBody").classList.add("hidden");
-      $("checklistEditor").classList.remove("hidden");
-      renderCheckItems(note.items || []);
-    }
-  }else{
-    resetEditor();
+    loadNoteIntoEditor(note);
+  } else {
+    editorMode = type;
 
-    state.editorType = type;
-
-    $("editorTitle").textContent =
-      type === "task"
-      ? "New checklist"
-      : "New note";
-
-    if(type === "task"){
-      $("noteBody").classList.add("hidden");
-      $("checklistEditor").classList.remove("hidden");
-      renderCheckItems([
-        {
-          id:uid(),
-          text:"",
-          done:false
-        }
-      ]);
-    }
+    loadNewEditor(type);
   }
 
-  setColor(state.editorColor);
-  updatePinButton();
+  editor.classList.add("open");
+  overlay.classList.add("open");
 
-  $("editor").classList.remove("hidden");
   document.body.style.overflow = "hidden";
 
-  setTimeout(() => $("noteTitle").focus(),100);
+  setTimeout(() => {
+    if (editorMode === "note") {
+      noteTitle.focus();
+    } else {
+      noteTitle.focus();
+    }
+  }, 350);
 }
 
-function closeEditor(){
-  $("editor").classList.add("hidden");
-  $("colorMenu").classList.add("hidden");
+function loadNewEditor(type) {
+  noteTitle.value = "";
+  noteLabel.value = "";
+  noteReminder.value = "";
+
+  $("editorMode").textContent =
+    type === "checklist" ? "CHECKLIST" : "NOTE";
+
+  $("editorFavorite").classList.remove("active");
+  $("editorFavorite").textContent = "☆";
+
+  $("editorPin").classList.remove("active");
+  $("editorPin").textContent = "◇";
+
+  selectEditorColor("default");
+
+  richEditor.innerHTML = "";
+
+  checklistItems = [];
+
+  if (type === "checklist") {
+    richEditorWrapHide();
+    checklistEditor.classList.add("visible");
+    renderChecklistEditor();
+  } else {
+    richEditorWrapShow();
+    checklistEditor.classList.remove("visible");
+  }
+
+  $("createdInfo").textContent = "New note";
+
+  editorDirty = false;
+
+  editorOriginalSnapshot = getEditorSnapshot();
+
+  updateEditorCounters();
+  updateAutosaveStatus("Ready");
+}
+
+function loadNoteIntoEditor(note) {
+  noteTitle.value = note.title || "";
+  noteLabel.value = note.label || "";
+  noteReminder.value = note.reminderAt || "";
+
+  $("editorMode").textContent =
+    note.type === "checklist"
+      ? "CHECKLIST"
+      : "NOTE";
+
+  $("editorFavorite").classList.toggle(
+    "active",
+    note.favorite
+  );
+
+  $("editorFavorite").textContent =
+    note.favorite ? "★" : "☆";
+
+  $("editorPin").classList.toggle(
+    "active",
+    note.pinned
+  );
+
+  $("editorPin").textContent =
+    note.pinned ? "⌖" : "◇";
+
+  selectEditorColor(note.color || "default");
+
+  if (note.type === "checklist") {
+    richEditorWrapHide();
+    checklistEditor.classList.add("visible");
+
+    checklistItems = note.checklist.map(item => ({
+      id: item.id,
+      text: item.text,
+      done: item.done
+    }));
+
+    renderChecklistEditor();
+  } else {
+    richEditorWrapShow();
+    checklistEditor.classList.remove("visible");
+
+    richEditor.innerHTML =
+      sanitizeHTML(
+        note.bodyHtml ||
+        escapeHTML(note.body || "").replace(/\n/g, "<br>")
+      );
+  }
+
+  $("createdInfo").textContent =
+    `Created ${formatFullDate(note.createdAt)}`;
+
+  editorDirty = false;
+
+  editorOriginalSnapshot = getEditorSnapshot();
+
+  updateEditorCounters();
+  updateAutosaveStatus("Saved");
+}
+
+function richEditorWrapShow() {
+  $("richEditorWrap").style.display = "block";
+}
+
+function richEditorWrapHide() {
+  $("richEditorWrap").style.display = "none";
+}
+
+function closeEditor() {
+  if (!editor.classList.contains("open")) {
+    return;
+  }
+
+  if (editorDirty) {
+    $("unsavedDialog").classList.add("open");
+    return;
+  }
+
+  actuallyCloseEditor();
+}
+
+function actuallyCloseEditor() {
+  editor.classList.remove("open");
+  overlay.classList.remove("open");
+
   document.body.style.overflow = "";
-  state.editingId = null;
+
+  editingId = null;
+  checklistItems = [];
+
+  clearDraft();
+
+  $("unsavedDialog").classList.remove("open");
 }
 
-function saveNote(){
-  const title = $("noteTitle").value.trim();
+function getEditorSnapshot() {
+  return JSON.stringify({
+    mode: editorMode,
+    title: noteTitle.value,
+    bodyHtml: sanitizeHTML(richEditor.innerHTML),
+    checklist: checklistItems,
+    color: getSelectedColor(),
+    label: noteLabel.value,
+    reminderAt: noteReminder.value,
+    favorite: $("editorFavorite").classList.contains("active"),
+    pinned: $("editorPin").classList.contains("active")
+  });
+}
 
-  if(state.editorType === "note"){
-    const body = $("noteBody").value.trim();
+function markEditorDirty() {
+  editorDirty = getEditorSnapshot() !== editorOriginalSnapshot;
 
-    if(!title && !body){
-      toast("Write something first");
-      return;
-    }
+  if (editorDirty) {
+    updateAutosaveStatus("Unsaved");
 
-    if(state.editingId){
-      const note = state.notes.find(n => n.id === state.editingId);
+    scheduleAutosave();
+  } else {
+    updateAutosaveStatus("Saved");
+  }
 
-      note.title = title || "Untitled note";
-      note.body = body;
-      note.color = state.editorColor;
-      note.pinned = state.editorPinned;
-      note.updatedAt = Date.now();
-    }else{
-      state.notes.unshift({
-        id:uid(),
-        type:"note",
-        title:title || "Untitled note",
-        body,
-        color:state.editorColor,
-        pinned:state.editorPinned,
-        archived:false,
-        trashed:false,
-        createdAt:Date.now(),
-        updatedAt:Date.now()
-      });
-    }
-  }else{
-    const items = [...document.querySelectorAll(".check-row")]
-      .map(row => ({
-        id:row.dataset.id,
-        text:row.querySelector("input").value.trim(),
-        done:row.querySelector(".check-toggle").classList.contains("checked")
-      }))
-      .filter(item => item.text);
+  updateEditorCounters();
+}
 
-    if(!title && !items.length){
-      toast("Add a task first");
-      return;
-    }
+function updateAutosaveStatus(text) {
+  $("autosaveStatus").textContent = text;
+}
 
-    if(state.editingId){
-      const note = state.notes.find(n => n.id === state.editingId);
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer);
 
-      note.title = title || "Untitled checklist";
-      note.items = items;
-      note.color = state.editorColor;
-      note.pinned = state.editorPinned;
-      note.updatedAt = Date.now();
-    }else{
-      state.notes.unshift({
-        id:uid(),
-        type:"task",
-        title:title || "Untitled checklist",
-        items,
-        color:state.editorColor,
-        pinned:state.editorPinned,
-        archived:false,
-        trashed:false,
-        createdAt:Date.now(),
-        updatedAt:Date.now()
-      });
-    }
+  autosaveTimer = setTimeout(() => {
+    if (!editorDirty) return;
+
+    saveDraft();
+
+    updateAutosaveStatus("Draft saved");
+  }, 650);
+}
+
+function saveDraft() {
+  const draft = {
+    mode: editorMode,
+    editingId,
+    snapshot: getEditorSnapshot(),
+    savedAt: Date.now()
+  };
+
+  localStorage.setItem(
+    DRAFT_KEY,
+    JSON.stringify(draft)
+  );
+}
+
+function clearDraft() {
+  localStorage.removeItem(DRAFT_KEY);
+}
+
+
+/* =========================================================
+   SAVE
+========================================================= */
+
+function saveEditor(closeAfter = false) {
+  const title = noteTitle.value.trim();
+
+  const bodyHTML =
+    sanitizeHTML(richEditor.innerHTML);
+
+  const bodyText =
+    stripHTML(bodyHTML).trim();
+
+  const label = noteLabel.value.trim();
+  const reminderAt = noteReminder.value;
+
+  if (
+    editorMode === "note" &&
+    !title &&
+    !bodyText
+  ) {
+    showToast("Add a title or some content first");
+    return;
+  }
+
+  if (
+    editorMode === "checklist" &&
+    !title &&
+    checklistItems.length === 0
+  ) {
+    showToast("Add a title or task first");
+    return;
+  }
+
+  let note;
+
+  if (editingId) {
+    note = findNote(editingId);
+
+    if (!note) return;
+  } else {
+    note = normalizeNote({
+      id: cryptoRandomId(),
+      type: editorMode,
+      title: "",
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    });
+
+    state.notes.unshift(note);
+    editingId = note.id;
+  }
+
+  note.type = editorMode;
+  note.title = title;
+  note.label = label;
+  note.reminderAt = reminderAt;
+  note.color = getSelectedColor();
+
+  note.favorite =
+    $("editorFavorite").classList.contains("active");
+
+  note.pinned =
+    $("editorPin").classList.contains("active");
+
+  note.updatedAt = Date.now();
+
+  if (editorMode === "note") {
+    note.bodyHtml = bodyHTML;
+    note.body = bodyText;
+    note.checklist = [];
+  } else {
+    note.checklist = checklistItems.map(item => ({
+      id: item.id,
+      text: item.text.trim(),
+      done: Boolean(item.done)
+    })).filter(item => item.text);
+
+    note.body = "";
+    note.bodyHtml = "";
   }
 
   saveState();
-  closeEditor();
-  render();
-  toast("Saved");
-}
 
-function renderCheckItems(items){
-  $("checkItems").innerHTML = "";
+  editorDirty = false;
+  editorOriginalSnapshot = getEditorSnapshot();
 
-  items.forEach(item => addCheckItem(item));
-}
+  clearDraft();
 
-function addCheckItem(item=null){
-  const row = document.createElement("div");
-
-  row.className = "check-row";
-  row.dataset.id = item?.id || uid();
-
-  row.innerHTML = `
-    <button class="check-toggle ${item?.done ? "checked" : ""}">
-      ${item?.done ? "✓" : ""}
-    </button>
-    <input
-      type="text"
-      placeholder="Task..."
-      value="${escapeHTML(item?.text || "")}"
-    >
-    <button class="remove-check">×</button>
-  `;
-
-  row.querySelector(".check-toggle").addEventListener("click",e => {
-    const btn = e.currentTarget;
-
-    btn.classList.toggle("checked");
-    btn.textContent =
-      btn.classList.contains("checked")
-      ? "✓"
-      : "";
-  });
-
-  row.querySelector(".remove-check").addEventListener("click",() => {
-    row.remove();
-
-    if(!$("checkItems").children.length){
-      addCheckItem();
-    }
-  });
-
-  row.querySelector("input").addEventListener("keydown",e => {
-    if(e.key === "Enter"){
-      e.preventDefault();
-      addCheckItem();
-    }
-  });
-
-  $("checkItems").appendChild(row);
-}
-
-function setColor(color){
-  state.editorColor = color;
-
-  const colors = {
-    default:"#343840",
-    yellow:"#d9bd52",
-    blue:"#4f91cc",
-    green:"#68b87b",
-    pink:"#d66c94",
-    purple:"#9a78d5",
-    orange:"#d7894e"
-  };
-
-  $("currentColor").style.background =
-    colors[color] || colors.default;
-}
-
-function updatePinButton(){
-  const button = $("pinEditor");
-
-  button.style.background =
-    state.editorPinned
-    ? "rgba(216,255,101,.1)"
-    : "";
-
-  button.style.color =
-    state.editorPinned
-    ? "var(--accent)"
-    : "";
-}
-
-function toast(message){
-  const el = $("toast");
-
-  el.textContent = message;
-  el.classList.add("show");
-
-  clearTimeout(toast.timer);
-
-  toast.timer = setTimeout(() => {
-    el.classList.remove("show");
-  },1800);
-}
-
-function closeCreateMenu(){
-  $("createMenu").classList.add("hidden");
-}
-
-function setFilter(filter){
-  state.filter = filter;
-  state.search = "";
-
-  $("searchInput").value = "";
+  updateAutosaveStatus("Saved");
 
   render();
+
+  if (closeAfter) {
+    actuallyCloseEditor();
+  } else {
+    showToast("Saved");
+  }
 }
 
-function closeSideMenu(){
-  $("sideMenu").classList.add("hidden");
-  $("overlay").classList.add("hidden");
+
+/* =========================================================
+   COLORS
+========================================================= */
+
+function getSelectedColor() {
+  const selected =
+    document.querySelector(".color-dot.active");
+
+  return selected
+    ? selected.dataset.color
+    : "default";
 }
 
-$("fab").addEventListener("click",() => {
-  $("createMenu").classList.toggle("hidden");
+function selectEditorColor(color) {
+  document.querySelectorAll(".color-dot")
+    .forEach(dot => {
+      dot.classList.toggle(
+        "active",
+        dot.dataset.color === color
+      );
+    });
+}
+
+
+/* =========================================================
+   FAVORITE / PIN FROM EDITOR
+========================================================= */
+
+$("editorFavorite").addEventListener("click", () => {
+  const active =
+    $("editorFavorite").classList.toggle("active");
+
+  $("editorFavorite").textContent =
+    active ? "★" : "☆";
+
+  markEditorDirty();
 });
 
-document.querySelectorAll(".create-option").forEach(button => {
-  button.addEventListener("click",() => {
-    openEditor(null,button.dataset.create);
+$("editorPin").addEventListener("click", () => {
+  const active =
+    $("editorPin").classList.toggle("active");
+
+  $("editorPin").textContent =
+    active ? "⌖" : "◇";
+
+  markEditorDirty();
+});
+
+
+/* =========================================================
+   CHECKLIST
+========================================================= */
+
+function renderChecklistEditor() {
+  checklistItemsEl.innerHTML = "";
+
+  const items = showCompleted
+    ? checklistItems
+    : checklistItems.filter(item => !item.done);
+
+  items.forEach(item => {
+    const row = document.createElement("div");
+
+    row.className =
+      `check-item ${item.done ? "done" : ""}`;
+
+    row.dataset.id = item.id;
+
+    row.innerHTML = `
+      <button class="check-item-check" aria-label="Toggle task"></button>
+
+      <input
+        class="check-item-text"
+        value="${escapeAttr(item.text)}"
+        maxlength="300"
+      >
+
+      <div class="check-item-actions">
+        <button data-move="up" title="Move up">↑</button>
+        <button data-move="down" title="Move down">↓</button>
+        <button data-remove="true" title="Delete">×</button>
+      </div>
+    `;
+
+    row.querySelector(".check-item-check")
+      .addEventListener("click", () => {
+        toggleChecklistItem(item.id);
+      });
+
+    row.querySelector(".check-item-text")
+      .addEventListener("input", event => {
+        const current = checklistItems.find(
+          x => x.id === item.id
+        );
+
+        if (!current) return;
+
+        current.text = event.target.value;
+
+        markEditorDirty();
+      });
+
+    row.querySelector('[data-move="up"]')
+      .addEventListener("click", () => {
+        moveChecklistItem(item.id, -1);
+      });
+
+    row.querySelector('[data-move="down"]')
+      .addEventListener("click", () => {
+        moveChecklistItem(item.id, 1);
+      });
+
+    row.querySelector("[data-remove]")
+      .addEventListener("click", () => {
+        checklistItems =
+          checklistItems.filter(x => x.id !== item.id);
+
+        renderChecklistEditor();
+        markEditorDirty();
+      });
+
+    checklistItemsEl.appendChild(row);
   });
-});
 
-$("emptyCreate").addEventListener("click",() => {
-  openEditor();
-});
+  updateChecklistProgress();
+}
 
-$("closeEditor").addEventListener("click",closeEditor);
+function addChecklistItem() {
+  const input = $("checkInput");
+  const text = input.value.trim();
 
-$("saveNote").addEventListener("click",saveNote);
+  if (!text) return;
 
-$("pinEditor").addEventListener("click",() => {
-  state.editorPinned = !state.editorPinned;
-  updatePinButton();
-});
-
-$("colorPicker").addEventListener("click",() => {
-  $("colorMenu").classList.toggle("hidden");
-});
-
-document.querySelectorAll(".color-menu button").forEach(button => {
-  button.addEventListener("click",() => {
-    setColor(button.dataset.color);
-    $("colorMenu").classList.add("hidden");
+  checklistItems.push({
+    id: cryptoRandomId(),
+    text,
+    done: false
   });
-});
 
-$("addCheck").addEventListener("click",() => addCheckItem());
+  input.value = "";
 
-$("searchBtn").addEventListener("click",() => {
-  $("searchPanel").classList.toggle("open");
+  renderChecklistEditor();
+  markEditorDirty();
 
-  if($("searchPanel").classList.contains("open")){
-    setTimeout(() => $("searchInput").focus(),100);
+  input.focus();
+}
+
+function toggleChecklistItem(id) {
+  const item = checklistItems.find(
+    x => x.id === id
+  );
+
+  if (!item) return;
+
+  item.done = !item.done;
+
+  renderChecklistEditor();
+  markEditorDirty();
+}
+
+function moveChecklistItem(id, direction) {
+  const index = checklistItems.findIndex(
+    x => x.id === id
+  );
+
+  if (index < 0) return;
+
+  const next = index + direction;
+
+  if (next < 0 || next >= checklistItems.length) {
+    return;
+  }
+
+  [
+    checklistItems[index],
+    checklistItems[next]
+  ] = [
+    checklistItems[next],
+    checklistItems[index]
+  ];
+
+  renderChecklistEditor();
+  markEditorDirty();
+}
+
+function updateChecklistProgress() {
+  const total = checklistItems.length;
+
+  const completed =
+    checklistItems.filter(item => item.done).length;
+
+  const percent =
+    total
+      ? Math.round((completed / total) * 100)
+      : 0;
+
+  $("checkProgress").textContent =
+    `${percent}%`;
+
+  $("progressBar").style.width =
+    `${percent}%`;
+
+  $("showCompletedBtn").textContent =
+    showCompleted
+      ? "Hide completed"
+      : "Show completed";
+}
+
+$("addCheckBtn").addEventListener(
+  "click",
+  addChecklistItem
+);
+
+$("checkInput").addEventListener(
+  "keydown",
+  event => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addChecklistItem();
+    }
+  }
+);
+
+$("clearCompletedBtn").addEventListener("click", () => {
+  const before = checklistItems.length;
+
+  checklistItems =
+    checklistItems.filter(item => !item.done);
+
+  if (before !== checklistItems.length) {
+    renderChecklistEditor();
+    markEditorDirty();
   }
 });
 
-$("searchInput").addEventListener("input",e => {
-  state.search = e.target.value;
-  render();
+$("showCompletedBtn").addEventListener("click", () => {
+  showCompleted = !showCompleted;
+  renderChecklistEditor();
 });
 
-$("clearSearch").addEventListener("click",() => {
-  state.search = "";
-  $("searchInput").value = "";
-  render();
+
+/* =========================================================
+   RICH TEXT
+========================================================= */
+
+document.querySelectorAll(
+  ".format-toolbar button"
+).forEach(button => {
+  button.addEventListener("mousedown", event => {
+    event.preventDefault();
+  });
+
+  button.addEventListener("click", () => {
+    const command = button.dataset.command;
+    const value = button.dataset.value || null;
+
+    richEditor.focus();
+
+    try {
+      document.execCommand(
+        command,
+        false,
+        value
+      );
+    } catch (error) {
+      console.warn("Formatting command failed:", error);
+    }
+
+    markEditorDirty();
+  });
 });
 
-document.querySelectorAll(".tab").forEach(tab => {
-  tab.addEventListener("click",() => {
+richEditor.addEventListener("input", markEditorDirty);
+
+richEditor.addEventListener("keydown", event => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "b") {
+    event.preventDefault();
+    document.execCommand("bold");
+    markEditorDirty();
+  }
+
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "i") {
+    event.preventDefault();
+    document.execCommand("italic");
+    markEditorDirty();
+  }
+
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "u") {
+    event.preventDefault();
+    document.execCommand("underline");
+    markEditorDirty();
+  }
+});
+
+
+/* =========================================================
+   EDITOR INPUTS
+========================================================= */
+
+noteTitle.addEventListener("input", markEditorDirty);
+noteLabel.addEventListener("change", markEditorDirty);
+noteReminder.addEventListener("change", markEditorDirty);
+
+document.querySelectorAll(".color-dot")
+  .forEach(dot => {
+    dot.addEventListener("click", () => {
+      selectEditorColor(dot.dataset.color);
+      markEditorDirty();
+    });
+  });
+
+function updateEditorCounters() {
+  const text =
+    editorMode === "checklist"
+      ? checklistItems.map(x => x.text).join(" ")
+      : stripHTML(richEditor.innerHTML);
+
+  const trimmed =
+    text.trim();
+
+  const words =
+    trimmed
+      ? trimmed.split(/\s+/).length
+      : 0;
+
+  $("wordCount").textContent =
+    `${words} ${words === 1 ? "word" : "words"}`;
+
+  $("charCount").textContent =
+    `${text.length} characters`;
+}
+
+
+/* =========================================================
+   DELETE FROM EDITOR
+========================================================= */
+
+$("deleteFromEditor").addEventListener("click", () => {
+  if (!editingId) {
+    actuallyCloseEditor();
+    return;
+  }
+
+  const id = editingId;
+
+  actuallyCloseEditor();
+
+  moveToTrash(id);
+});
+
+
+/* =========================================================
+   CUSTOM DIALOG
+========================================================= */
+
+let dialogCallback = null;
+
+function askDialog(title, text, callback) {
+  $("dialogTitle").textContent = title;
+  $("dialogText").textContent = text;
+
+  dialogCallback = callback;
+
+  $("dialogLayer").classList.add("open");
+}
+
+function closeDialog() {
+  $("dialogLayer").classList.remove("open");
+  dialogCallback = null;
+}
+
+$("dialogCancel").addEventListener(
+  "click",
+  closeDialog
+);
+
+$("dialogConfirm").addEventListener(
+  "click",
+  () => {
+    const callback = dialogCallback;
+
+    closeDialog();
+
+    if (callback) callback();
+  }
+);
+
+
+/* =========================================================
+   UNSAVED CHANGES
+========================================================= */
+
+$("saveAndCloseBtn").addEventListener(
+  "click",
+  () => {
+    $("unsavedDialog").classList.remove("open");
+    saveEditor(true);
+  }
+);
+
+$("discardAndCloseBtn").addEventListener(
+  "click",
+  () => {
+    $("unsavedDialog").classList.remove("open");
+    editorDirty = false;
+    clearDraft();
+    actuallyCloseEditor();
+  }
+);
+
+$("keepEditingBtn").addEventListener(
+  "click",
+  () => {
+    $("unsavedDialog").classList.remove("open");
+  }
+);
+
+
+/* =========================================================
+   LABEL CREATION
+========================================================= */
+
+$("addLabelBtn").addEventListener("click", () => {
+  $("newLabelInput").value = "";
+  $("labelDialog").classList.add("open");
+
+  setTimeout(() => {
+    $("newLabelInput").focus();
+  }, 100);
+});
+
+$("labelCancel").addEventListener("click", () => {
+  $("labelDialog").classList.remove("open");
+});
+
+$("labelConfirm").addEventListener("click", createLabel);
+
+$("newLabelInput").addEventListener(
+  "keydown",
+  event => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      createLabel();
+    }
+  }
+);
+
+function createLabel() {
+  const value =
+    $("newLabelInput").value.trim();
+
+  if (!value) return;
+
+  const existing =
+    state.labels.find(
+      label => label.toLowerCase() === value.toLowerCase()
+    );
+
+  if (!existing) {
+    state.labels.push(value);
+    saveState();
+  }
+
+  renderLabelSelect();
+
+  noteLabel.value = value;
+
+  $("labelDialog").classList.remove("open");
+
+  markEditorDirty();
+
+  showToast("Label added");
+}
+
+function renderLabelSelect() {
+  const current = noteLabel.value;
+
+  noteLabel.innerHTML = `
+    <option value="">No label</option>
+  `;
+
+  state.labels.forEach(label => {
+    const option =
+      document.createElement("option");
+
+    option.value = label;
+    option.textContent = label;
+
+    noteLabel.appendChild(option);
+  });
+
+  noteLabel.value = current;
+}
+
+
+/* =========================================================
+   CREATE MENU
+========================================================= */
+
+function openCreateMenu() {
+  $("createMenu").classList.toggle("open");
+}
+
+function closeCreateMenu() {
+  $("createMenu").classList.remove("open");
+}
+
+$("fab").addEventListener(
+  "click",
+  event => {
+    event.stopPropagation();
+    openCreateMenu();
+  }
+);
+
+document.querySelectorAll(
+  "[data-create]"
+).forEach(button => {
+  button.addEventListener("click", () => {
+    const type = button.dataset.create;
+
+    closeCreateMenu();
+
+    openEditor(null, type);
+  });
+});
+
+$("emptyCreateBtn").addEventListener(
+  "click",
+  () => openEditor(null, "note")
+);
+
+
+/* =========================================================
+   SEARCH
+========================================================= */
+
+$("searchBtn").addEventListener("click", () => {
+  $("searchPanel").classList.toggle("open");
+
+  if ($("searchPanel").classList.contains("open")) {
+    setTimeout(() => {
+      $("searchInput").focus();
+    }, 100);
+  }
+});
+
+$("searchInput").addEventListener(
+  "input",
+  event => {
+    searchTerm =
+      event.target.value.trim();
+
+    renderNotes();
+  }
+);
+
+$("clearSearch").addEventListener(
+  "click",
+  () => {
+    $("searchInput").value = "";
+    searchTerm = "";
+    renderNotes();
+    $("searchInput").focus();
+  }
+);
+
+
+/* =========================================================
+   SORT
+========================================================= */
+
+$("sortBtn").addEventListener(
+  "click",
+  event => {
+    event.stopPropagation();
+
+    $("sortMenu").classList.toggle("open");
+  }
+);
+
+document.querySelectorAll(
+  "#sortMenu button"
+).forEach(button => {
+  button.addEventListener("click", () => {
+    sortMode = button.dataset.sort;
+
+    const labels = {
+      updated: "Recent",
+      created: "Created",
+      az: "A → Z",
+      za: "Z → A",
+      reminder: "Reminder"
+    };
+
+    $("sortLabel").textContent =
+      labels[sortMode] || "Recent";
+
+    $("sortMenu").classList.remove("open");
+
+    renderNotes();
+  });
+});
+
+
+/* =========================================================
+   FILTER TABS
+========================================================= */
+
+document.querySelectorAll(
+  ".tab"
+).forEach(tab => {
+  tab.addEventListener("click", () => {
     setFilter(tab.dataset.filter);
   });
 });
 
-$("sortBtn").addEventListener("click",() => {
-  $("sortMenu").classList.toggle("hidden");
-});
-
-document.querySelectorAll("[data-sort]").forEach(button => {
-  button.addEventListener("click",() => {
-    state.sort = button.dataset.sort;
-
-    const labels = {
-      recent:"Recent",
-      created:"Created",
-      az:"A → Z",
-      za:"Z → A"
-    };
-
-    $("sortText").textContent = labels[state.sort];
-
-    $("sortMenu").classList.add("hidden");
-
-    render();
+document.querySelectorAll(
+  ".side-item[data-filter]"
+).forEach(item => {
+  item.addEventListener("click", () => {
+    setFilter(item.dataset.filter);
+    closeMenu();
   });
 });
 
-$("themeBtn").addEventListener("click",() => {
-  state.dark = !state.dark;
+function setFilter(filter) {
+  activeFilter = filter;
+  activeLabel = "";
 
-  document.body.classList.toggle(
-    "light",
-    !state.dark
-  );
+  document.querySelectorAll(".tab")
+    .forEach(tab => {
+      tab.classList.toggle(
+        "active",
+        tab.dataset.filter === filter
+      );
+    });
 
-  saveState();
-
-  toast(
-    state.dark
-    ? "Dark mode"
-    : "Light mode"
-  );
-});
-
-$("menuBtn").addEventListener("click",() => {
-  $("sideMenu").classList.remove("hidden");
-  $("overlay").classList.remove("hidden");
-});
-
-$("closeMenu").addEventListener("click",closeSideMenu);
-
-$("overlay").addEventListener("click",closeSideMenu);
-
-document.querySelectorAll("[data-filter-side]").forEach(button => {
-  button.addEventListener("click",() => {
-    setFilter(button.dataset.filterSide);
-    closeSideMenu();
+  document.querySelectorAll(
+    ".side-item[data-filter]"
+  ).forEach(item => {
+    item.classList.toggle(
+      "active",
+      item.dataset.filter === filter
+    );
   });
+
+  render();
+}
+
+
+/* =========================================================
+   SIDE MENU
+========================================================= */
+
+function openMenu() {
+  $("sideMenu").classList.add("open");
+  overlay.classList.add("open");
+}
+
+function closeMenu() {
+  $("sideMenu").classList.remove("open");
+
+  if (!editor.classList.contains("open")) {
+    overlay.classList.remove("open");
+  }
+}
+
+$("menuBtn").addEventListener("click", openMenu);
+$("closeMenu").addEventListener("click", closeMenu);
+
+
+/* =========================================================
+   OVERLAY
+========================================================= */
+
+overlay.addEventListener("click", () => {
+  if (editor.classList.contains("open")) {
+    closeEditor();
+    return;
+  }
+
+  closeMenu();
+  closeCreateMenu();
+  closeContextMenu();
 });
 
-$("undoBtn").addEventListener("click",undoDelete);
 
-$("exportBtn").addEventListener("click",() => {
+/* =========================================================
+   EDITOR BUTTONS
+========================================================= */
+
+$("editorClose").addEventListener(
+  "click",
+  closeEditor
+);
+
+$("saveBtn").addEventListener(
+  "click",
+  () => saveEditor(false)
+);
+
+
+/* =========================================================
+   THEME
+========================================================= */
+
+$("themeBtn").addEventListener(
+  "click",
+  toggleTheme
+);
+
+$("sideThemeBtn").addEventListener(
+  "click",
+  () => {
+    toggleTheme();
+    closeMenu();
+  }
+);
+
+
+/* =========================================================
+   EXPORT
+========================================================= */
+
+$("exportBtn").addEventListener(
+  "click",
+  exportData
+);
+
+function exportData() {
   const backup = {
-    app:"Notely",
-    version:2,
-    exportedAt:new Date().toISOString(),
-    notes:state.notes
+    app: "Notely",
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    data: state
   };
 
   const blob = new Blob(
-    [JSON.stringify(backup,null,2)],
-    {type:"application/json"}
+    [JSON.stringify(backup, null, 2)],
+    { type: "application/json" }
   );
 
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
+  const url =
+    URL.createObjectURL(blob);
 
-  link.href = url;
-  link.download =
-    `notely-backup-${new Date().toISOString().slice(0,10)}.json`;
+  const anchor =
+    document.createElement("a");
 
-  link.click();
+  const date =
+    new Date()
+      .toISOString()
+      .slice(0, 10);
+
+  anchor.href = url;
+  anchor.download = `notely-backup-${date}.json`;
+
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
 
   URL.revokeObjectURL(url);
 
-  toast("Backup exported");
-});
+  showToast("Backup exported");
+}
 
-$("importBtn").addEventListener("click",() => {
-  $("importFile").click();
-});
 
-$("importFile").addEventListener("change",e => {
-  const file = e.target.files[0];
+/* =========================================================
+   IMPORT
+========================================================= */
 
-  if(!file) return;
+$("importBtn").addEventListener(
+  "click",
+  () => $("importFile").click()
+);
 
-  const reader = new FileReader();
+$("importFile").addEventListener(
+  "change",
+  async event => {
+    const file = event.target.files[0];
 
-  reader.onload = event => {
-    try{
-      const data = JSON.parse(event.target.result);
+    if (!file) return;
 
-      if(!Array.isArray(data.notes)){
-        throw new Error("Invalid");
+    try {
+      const text =
+        await file.text();
+
+      const parsed =
+        JSON.parse(text);
+
+      const imported =
+        parsed.data || parsed;
+
+      if (
+        !imported ||
+        !Array.isArray(imported.notes)
+      ) {
+        throw new Error("Invalid backup");
       }
 
-      state.notes = data.notes;
+      askDialog(
+        "Import backup?",
+        "Importing will replace the current local Notely data.",
+        () => {
+          state = {
+            notes: imported.notes.map(normalizeNote),
+            labels:
+              Array.isArray(imported.labels)
+                ? imported.labels
+                : ["School", "Personal", "Ideas"],
+            version: 2
+          };
 
-      saveState();
-      render();
-      closeSideMenu();
+          saveState();
+          render();
+          renderLabelSelect();
 
-      toast("Backup imported");
-    }catch{
-      toast("Invalid backup file");
+          showToast("Backup imported");
+        }
+      );
+
+    } catch (error) {
+      console.error(error);
+      showToast("Invalid backup file");
     }
 
-    e.target.value = "";
-  };
+    event.target.value = "";
+  }
+);
 
-  reader.readAsText(file);
-});
 
-$("clearAllBtn").addEventListener("click",() => {
-  const confirmed = window.confirm(
-    "Delete every note and task? This cannot be undone."
-  );
+/* =========================================================
+   CLEAR ALL
+========================================================= */
 
-  if(!confirmed) return;
+$("clearAllBtn").addEventListener(
+  "click",
+  () => {
+    askDialog(
+      "Clear all data?",
+      "This will permanently remove every note, checklist and label from this device.",
+      () => {
+        state = defaultState();
 
-  state.notes = [];
+        saveState();
+        render();
+        renderLabelSelect();
 
-  saveState();
-  render();
-  closeSideMenu();
+        closeMenu();
 
-  toast("All data cleared");
-});
+        showToast("All data cleared");
+      }
+    );
+  }
+);
 
-document.addEventListener("keydown",e => {
-  if(e.key === "Escape"){
-    $("sortMenu").classList.add("hidden");
-    $("createMenu").classList.add("hidden");
-    $("colorMenu").classList.add("hidden");
 
-    if(!$("editor").classList.contains("hidden")){
-      closeEditor();
+/* =========================================================
+   KEYBOARD SHORTCUTS
+========================================================= */
+
+document.addEventListener("keydown", event => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+    if (editor.classList.contains("open")) {
+      event.preventDefault();
+      saveEditor(false);
     }
-
-    closeSideMenu();
   }
 
-  if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s"){
-    if(!$("editor").classList.contains("hidden")){
-      e.preventDefault();
-      saveNote();
-    }
-  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
 
-  if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k"){
-    e.preventDefault();
     $("searchPanel").classList.add("open");
-    $("searchInput").focus();
+
+    setTimeout(() => {
+      $("searchInput").focus();
+    }, 50);
+  }
+
+  if (event.key === "Escape") {
+    if ($("contextMenu").classList.contains("open")) {
+      closeContextMenu();
+      return;
+    }
+
+    if ($("sortMenu").classList.contains("open")) {
+      $("sortMenu").classList.remove("open");
+      return;
+    }
+
+    if ($("createMenu").classList.contains("open")) {
+      closeCreateMenu();
+      return;
+    }
+
+    if ($("unsavedDialog").classList.contains("open")) {
+      $("unsavedDialog").classList.remove("open");
+      return;
+    }
+
+    if ($("dialogLayer").classList.contains("open")) {
+      closeDialog();
+      return;
+    }
+
+    if ($("labelDialog").classList.contains("open")) {
+      $("labelDialog").classList.remove("open");
+      return;
+    }
+
+    if (editor.classList.contains("open")) {
+      closeEditor();
+      return;
+    }
+
+    closeMenu();
   }
 });
 
-document.addEventListener("click",e => {
-  if(
-    !$("sortMenu").contains(e.target) &&
-    !$("sortBtn").contains(e.target)
-  ){
-    $("sortMenu").classList.add("hidden");
+
+/* =========================================================
+   GLOBAL CLICK
+========================================================= */
+
+document.addEventListener("click", event => {
+  if (
+    !event.target.closest(".context-menu") &&
+    !event.target.closest('[data-action="more"]')
+  ) {
+    closeContextMenu();
   }
 
-  if(
-    !$("colorMenu").contains(e.target) &&
-    !$("colorPicker").contains(e.target)
-  ){
-    $("colorMenu").classList.add("hidden");
+  if (
+    !event.target.closest(".sort-menu") &&
+    !event.target.closest("#sortBtn")
+  ) {
+    $("sortMenu").classList.remove("open");
+  }
+
+  if (
+    !event.target.closest(".create-menu") &&
+    !event.target.closest("#fab")
+  ) {
+    closeCreateMenu();
   }
 });
 
-loadState();
-updateDate();
-render();
+
+/* =========================================================
+   REMINDER CHECK
+========================================================= */
+
+function checkReminders() {
+  let changed = false;
+
+  state.notes.forEach(note => {
+    if (!note.reminderAt) return;
+
+    if (
+      isReminderDue(note) &&
+      !note.reminderNotified
+    ) {
+      note.reminderNotified = true;
+      changed = true;
+
+      showToast(
+        `Reminder: ${note.title || "Untitled note"}`
+      );
+    }
+  });
+
+  if (changed) {
+    saveState();
+    render();
+  }
+}
+
+
+/* =========================================================
+   DRAFT RECOVERY
+========================================================= */
+
+function checkDraftRecovery() {
+  try {
+    const raw =
+      localStorage.getItem(DRAFT_KEY);
+
+    if (!raw) return;
+
+    const draft =
+      JSON.parse(raw);
+
+    if (!draft || !draft.snapshot) {
+      clearDraft();
+      return;
+    }
+
+    const age =
+      Date.now() - Number(draft.savedAt || 0);
+
+    if (age > 24 * 60 * 60 * 1000) {
+      clearDraft();
+    }
+  } catch {
+    clearDraft();
+  }
+}
+
+
+/* =========================================================
+   INITIALIZE
+========================================================= */
+
+function initialize() {
+  loadTheme();
+  updateDate();
+
+  renderLabelSelect();
+  render();
+
+  checkReminders();
+  checkDraftRecovery();
+
+  setInterval(checkReminders, 30000);
+}
+
+initialize();
