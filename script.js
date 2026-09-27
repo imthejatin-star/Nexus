@@ -922,7 +922,7 @@ function togglePin(id) {
   note.pinned = !note.pinned;
   note.updatedAt = Date.now();
 
-  saveState();
+  saveState(note);
   render();
 }
 
