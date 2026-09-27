@@ -934,7 +934,7 @@ function toggleFavorite(id) {
   note.favorite = !note.favorite;
   note.updatedAt = Date.now();
 
-  saveState();
+  saveState(note);
   render();
 
   showToast(
