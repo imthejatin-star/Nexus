@@ -138,6 +138,11 @@ function loadState() {
 
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if (state.notes && state.notes.length) {
+   const latestNote = state.notes[0];
+
+  syncNoteToCloud(latestNote);
+  }
 }
 async function syncNoteToCloud(note) {
   if (!session || !note) return;
