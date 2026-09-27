@@ -966,7 +966,7 @@ function restoreNote(id) {
   note.archived = false;
   note.updatedAt = Date.now();
 
-  saveState();
+  saveState(note);
   render();
 
   showToast("Note restored");
@@ -980,7 +980,7 @@ function restoreArchive(id) {
   note.archived = false;
   note.updatedAt = Date.now();
 
-  saveState();
+  saveState(note);
   render();
 
   showToast("Note restored");
@@ -1013,7 +1013,7 @@ function duplicateNote(id) {
 
   state.notes.unshift(copy);
 
-  saveState();
+  saveState(note);
   render();
 
   showToast("Note duplicated");
@@ -1036,7 +1036,7 @@ function moveToTrash(id) {
   note.archived = false;
   note.updatedAt = Date.now();
 
-  saveState();
+  saveState(note);
   render();
 
   showUndo();
@@ -1054,7 +1054,7 @@ function permanentlyDelete(id) {
 function emptyTrash() {
   state.notes = state.notes.filter(note => !note.trashed);
 
-  saveState();
+  saveState(note);
   render();
 
   showToast("Trash emptied");
@@ -1083,7 +1083,7 @@ $("undoBtn").addEventListener("click", () => {
     note.trashed = undoData.previous.trashed;
     note.archived = undoData.previous.archived;
 
-    saveState();
+    saveState(note);
     render();
   }
 
