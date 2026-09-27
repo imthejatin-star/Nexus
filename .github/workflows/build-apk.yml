@@ -1,0 +1,93 @@
+name: Build Notely APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Notely Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Notely
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Prepare web application
+        run: |
+          rm -rf www
+          mkdir -p www
+
+          find . -maxdepth 1 -type f \
+            \( -name "*.html" -o -name "*.css" -o -name "*.js" -o -name "*.json" \) \
+            ! -name "package.json" \
+            ! -name "capacitor.config.json" \
+            -exec cp {} www/ \;
+
+          for dir in assets images icons fonts; do
+            if [ -d "$dir" ]; then
+              cp -r "$dir" "www/$dir"
+            fi
+          done
+
+          echo "===== NOTELY WEB FILES ====="
+          find www -type f | sort
+
+      - name: Verify Notely files
+        run: |
+          test -f www/index.html
+          test -f www/auth.html
+          test -f www/script.js
+          test -f www/supabase.js
+
+          if [ -f auth.css ]; then
+            test -f www/auth.css
+          fi
+
+          echo "All required Notely files are present."
+
+      - name: Add Android platform
+        run: npx cap add android
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Make Gradle executable
+        run: chmod +x android/gradlew
+
+      - name: Build Debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug
+
+      - name: Verify APK
+        run: |
+          test -f android/app/build/outputs/apk/debug/app-debug.apk
+          ls -lh android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload Notely APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Notely-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
