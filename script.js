@@ -136,14 +136,17 @@ function loadState() {
   }
 }
 
-function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  if (state.notes && state.notes.length) {
-   const latestNote = state.notes[0];
+function saveState(noteToSync = null) {
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify(state)
+  );
 
-  syncNoteToCloud(latestNote);
+  if (noteToSync) {
+    syncNoteToCloud(noteToSync);
   }
 }
+
 async function syncNoteToCloud(note) {
   if (!session || !note) return;
 
@@ -1641,7 +1644,7 @@ function saveEditor(closeAfter = false) {
     note.bodyHtml = "";
   }
 
-  saveState();
+  saveState(note);
 
   editorDirty = false;
   editorOriginalSnapshot = getEditorSnapshot();
