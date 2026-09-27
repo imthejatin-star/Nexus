@@ -2,199 +2,204 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<meta name="theme-color" content="#0b0c0f">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#090a0d">
 <title>Notely — Notes & Tasks</title>
 <link rel="stylesheet" href="style.css">
 </head>
-
 <body>
 <div id="app">
 
-  <header class="topbar">
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">N</div>
+    <div>
+      <div class="brand-name">Notely</div>
+      <div class="brand-sub">Notes & Tasks</div>
+    </div>
+  </div>
+
+  <div class="top-actions">
+    <button class="icon-btn" id="searchBtn" aria-label="Search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+    </button>
+    <button class="icon-btn" id="themeBtn" aria-label="Theme">
+      <svg viewBox="0 0 24 24"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"/></svg>
+    </button>
+    <button class="icon-btn" id="menuBtn" aria-label="Menu">
+      <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+  </div>
+</header>
+
+<section class="search-panel" id="searchPanel">
+  <div class="search-box">
+    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+    <input id="searchInput" placeholder="Search your notes..." autocomplete="off">
+    <button id="clearSearch">×</button>
+  </div>
+</section>
+
+<nav class="tabs" id="tabs">
+  <button class="tab active" data-filter="all">All</button>
+  <button class="tab" data-filter="notes">Notes</button>
+  <button class="tab" data-filter="tasks">Tasks</button>
+  <button class="tab" data-filter="pinned">Pinned</button>
+  <button class="tab" data-filter="archive">Archive</button>
+  <button class="tab" data-filter="trash">Trash</button>
+</nav>
+
+<main>
+  <section class="hero">
+    <div>
+      <div class="eyebrow" id="dateLabel">YOUR SPACE</div>
+      <h1 id="pageTitle">Everything in one place.</h1>
+      <div class="stats" id="stats"></div>
+    </div>
+
+    <button class="sort-btn" id="sortBtn">
+      <span id="sortText">Recent</span>
+      <svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>
+    </button>
+  </section>
+
+  <div class="sort-menu hidden" id="sortMenu">
+    <button data-sort="recent">Recently edited</button>
+    <button data-sort="created">Recently created</button>
+    <button data-sort="az">A → Z</button>
+    <button data-sort="za">Z → A</button>
+  </div>
+
+  <section class="content">
+    <div class="empty-state hidden" id="emptyState">
+      <div class="empty-icon">
+        <svg viewBox="0 0 24 24">
+          <path d="M5 4h14v16H5z"/>
+          <path d="M8 8h8M8 12h8M8 16h5"/>
+        </svg>
+      </div>
+      <h2 id="emptyTitle">Nothing here yet</h2>
+      <p id="emptyText">Create your first note to get started.</p>
+      <button class="primary-btn" id="emptyCreate">Create note</button>
+    </div>
+
+    <div class="notes-grid" id="notesGrid"></div>
+  </section>
+</main>
+
+<button class="fab" id="fab" aria-label="Create">
+  <span></span><span></span>
+</button>
+
+<div class="create-menu hidden" id="createMenu">
+  <button class="create-option" data-create="note">
+    <div class="create-icon note-icon">
+      <svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+    </div>
+    <div>
+      <strong>New note</strong>
+      <small>Write something down</small>
+    </div>
+  </button>
+
+  <button class="create-option" data-create="task">
+    <div class="create-icon task-icon">
+      <svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="m8 12 2.5 2.5L16 9"/></svg>
+    </div>
+    <div>
+      <strong>New checklist</strong>
+      <small>Organize your tasks</small>
+    </div>
+  </button>
+</div>
+
+<div class="overlay hidden" id="overlay"></div>
+
+<section class="editor hidden" id="editor">
+  <header class="editor-header">
+    <button class="close-btn" id="closeEditor">
+      <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
+    </button>
+
+    <div class="editor-title" id="editorTitle">New note</div>
+
+    <div class="editor-actions">
+      <button class="icon-btn" id="pinEditor" title="Pin">
+        <svg viewBox="0 0 24 24"><path d="M8 4h8l-1 6 3 3v2H6v-2l3-3zM12 15v5"/></svg>
+      </button>
+      <button class="save-btn" id="saveNote">Save</button>
+    </div>
+  </header>
+
+  <div class="editor-body">
+    <div class="editor-meta">
+      <button class="color-picker" id="colorPicker">
+        <span id="currentColor"></span>
+        <span>Color</span>
+        <svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>
+      </button>
+    </div>
+
+    <div class="color-menu hidden" id="colorMenu">
+      <button data-color="default"><span class="c default"></span></button>
+      <button data-color="yellow"><span class="c yellow"></span></button>
+      <button data-color="blue"><span class="c blue"></span></button>
+      <button data-color="green"><span class="c green"></span></button>
+      <button data-color="pink"><span class="c pink"></span></button>
+      <button data-color="purple"><span class="c purple"></span></button>
+      <button data-color="orange"><span class="c orange"></span></button>
+    </div>
+
+    <input class="title-input" id="noteTitle" placeholder="Title" maxlength="120">
+    <textarea class="body-input" id="noteBody" placeholder="Start writing..."></textarea>
+
+    <div class="checklist-editor hidden" id="checklistEditor">
+      <div id="checkItems"></div>
+      <button class="add-check" id="addCheck"><span>+</span> Add item</button>
+    </div>
+  </div>
+</section>
+
+<aside class="side-menu hidden" id="sideMenu">
+  <div class="side-head">
     <div class="brand">
       <div class="brand-mark">N</div>
       <div>
         <div class="brand-name">Notely</div>
-        <div class="brand-sub">Notes & Tasks</div>
+        <div class="brand-sub">Your personal space</div>
       </div>
     </div>
 
-    <div class="top-actions">
-      <button class="icon-btn" id="searchBtn" aria-label="Search">
-        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
-      </button>
-      <button class="icon-btn" id="themeBtn" aria-label="Theme">
-        <svg viewBox="0 0 24 24"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"></path></svg>
-      </button>
-      <button class="icon-btn" id="menuBtn" aria-label="Menu">
-        <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
-      </button>
-    </div>
-  </header>
-
-  <div class="search-panel" id="searchPanel">
-    <div class="search-box">
-      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
-      <input id="searchInput" placeholder="Search notes and tasks..." autocomplete="off">
-      <button id="clearSearch">×</button>
-    </div>
-  </div>
-
-  <nav class="tabs">
-    <button class="tab active" data-filter="all">All</button>
-    <button class="tab" data-filter="notes">Notes</button>
-    <button class="tab" data-filter="tasks">Tasks</button>
-    <button class="tab" data-filter="pinned">Pinned</button>
-    <button class="tab" data-filter="archive">Archive</button>
-    <button class="tab" data-filter="trash">Trash</button>
-  </nav>
-
-  <main>
-    <section class="hero">
-      <div>
-        <span class="eyebrow" id="dateLabel">YOUR SPACE</span>
-        <h1 id="pageTitle">Everything in one place.</h1>
-      </div>
-      <button class="sort-btn" id="sortBtn">
-        <span>Recent</span>
-        <svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"></path></svg>
-      </button>
-    </section>
-
-    <div class="sort-menu hidden" id="sortMenu">
-      <button data-sort="recent">Recently edited</button>
-      <button data-sort="created">Recently created</button>
-      <button data-sort="az">A → Z</button>
-      <button data-sort="za">Z → A</button>
-    </div>
-
-    <section class="content">
-      <div class="empty-state hidden" id="emptyState">
-        <div class="empty-icon">
-          <svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"></path><path d="M8 8h8M8 12h8M8 16h5"></path></svg>
-        </div>
-        <h2 id="emptyTitle">Nothing here yet</h2>
-        <p id="emptyText">Create your first note to get started.</p>
-        <button class="primary-btn" id="emptyCreate">Create note</button>
-      </div>
-
-      <div class="notes-grid" id="notesGrid"></div>
-    </section>
-  </main>
-
-  <button class="fab" id="fab" aria-label="Create">
-    <span></span>
-    <span></span>
-  </button>
-
-  <div class="create-menu hidden" id="createMenu">
-    <button class="create-option" data-create="note">
-      <div class="create-icon note-icon">
-        <svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"></path><path d="M8 8h8M8 12h8M8 16h5"></path></svg>
-      </div>
-      <div>
-        <strong>New note</strong>
-        <small>Write something down</small>
-      </div>
-    </button>
-
-    <button class="create-option" data-create="task">
-      <div class="create-icon task-icon">
-        <svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="3"></rect><path d="m8 12 2.5 2.5L16 9"></path></svg>
-      </div>
-      <div>
-        <strong>New checklist</strong>
-        <small>Organize tasks</small>
-      </div>
+    <button class="close-btn" id="closeMenu">
+      <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
     </button>
   </div>
 
-  <div class="overlay hidden" id="overlay"></div>
-
-  <div class="editor hidden" id="editor">
-    <div class="editor-header">
-      <button class="close-btn" id="closeEditor">
-        <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"></path></svg>
-      </button>
-
-      <div class="editor-title" id="editorTitle">New note</div>
-
-      <div class="editor-actions">
-        <button class="icon-btn" id="pinEditor">
-          <svg viewBox="0 0 24 24"><path d="M8 4h8l-1 6 3 3v2H6v-2l3-3zM12 15v5"></path></svg>
-        </button>
-        <button class="save-btn" id="saveNote">Save</button>
-      </div>
-    </div>
-
-    <div class="editor-body">
-      <div class="editor-meta">
-        <button class="color-picker" id="colorPicker">
-          <span id="currentColor"></span>
-          <span>Color</span>
-          <svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"></path></svg>
-        </button>
-      </div>
-
-      <div class="color-menu hidden" id="colorMenu">
-        <button data-color="default"><span class="c default"></span></button>
-        <button data-color="yellow"><span class="c yellow"></span></button>
-        <button data-color="blue"><span class="c blue"></span></button>
-        <button data-color="green"><span class="c green"></span></button>
-        <button data-color="pink"><span class="c pink"></span></button>
-        <button data-color="purple"><span class="c purple"></span></button>
-        <button data-color="orange"><span class="c orange"></span></button>
-      </div>
-
-      <input class="title-input" id="noteTitle" placeholder="Title" maxlength="120">
-
-      <textarea class="body-input" id="noteBody" placeholder="Start writing..."></textarea>
-
-      <div class="checklist-editor hidden" id="checklistEditor">
-        <div id="checkItems"></div>
-        <button class="add-check" id="addCheck">
-          <span>+</span> Add item
-        </button>
-      </div>
-    </div>
+  <div class="side-links">
+    <button data-filter-side="all"><span>⌂</span> All notes</button>
+    <button data-filter-side="notes"><span>▤</span> Notes</button>
+    <button data-filter-side="tasks"><span>☑</span> Checklists</button>
+    <button data-filter-side="pinned"><span>☆</span> Pinned</button>
+    <button data-filter-side="archive"><span>□</span> Archive</button>
+    <button data-filter-side="trash"><span>⌫</span> Trash</button>
   </div>
 
-  <aside class="side-menu hidden" id="sideMenu">
-    <div class="side-head">
-      <div class="brand">
-        <div class="brand-mark">N</div>
-        <div>
-          <div class="brand-name">Notely</div>
-          <div class="brand-sub">Your personal space</div>
-        </div>
-      </div>
-      <button class="close-btn" id="closeMenu">
-        <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"></path></svg>
-      </button>
-    </div>
+  <div class="side-bottom">
+    <button id="exportBtn"><span>↗</span> Export backup</button>
+    <button id="importBtn"><span>↙</span> Import backup</button>
+    <input type="file" id="importFile" accept=".json" hidden>
+    <button id="clearAllBtn" class="danger-side"><span>×</span> Clear all data</button>
+  </div>
+</aside>
 
-    <div class="side-links">
-      <button data-filter-side="all"><span>⌂</span> All notes</button>
-      <button data-filter-side="notes"><span>▤</span> Notes</button>
-      <button data-filter-side="tasks"><span>☑</span> Checklists</button>
-      <button data-filter-side="pinned"><span>☆</span> Pinned</button>
-      <button data-filter-side="archive"><span>□</span> Archive</button>
-      <button data-filter-side="trash"><span>⌫</span> Trash</button>
-    </div>
-
-    <div class="side-bottom">
-      <button id="exportBtn"><span>↗</span> Export data</button>
-      <button id="importBtn"><span>↙</span> Import data</button>
-      <input type="file" id="importFile" accept=".json" hidden>
-      <button id="clearAllBtn" class="danger-side"><span>×</span> Clear all data</button>
-    </div>
-  </aside>
-
-  <div class="toast" id="toast"></div>
-
+<div class="undo-bar" id="undoBar">
+  <span id="undoMessage">Note deleted</span>
+  <button id="undoBtn">Undo</button>
 </div>
 
+<div class="toast" id="toast"></div>
+
+</div>
 <script src="script.js"></script>
 </body>
 </html>
